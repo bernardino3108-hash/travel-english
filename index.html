@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Travel English</title>
+<meta name="theme-color" content="#0d1b2e">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="sign">
+  <a class="brand" href="#/" aria-label="Início">
+    <span class="gate">A1</span>
+    <span class="brand-name">Travel English</span>
+  </a>
+  <div class="ctrls">
+    <div class="seg" role="group" aria-label="Sotaque">
+      <button data-accent="us" aria-pressed="true">US</button>
+      <button data-accent="uk" aria-pressed="false">UK</button>
+    </div>
+    <div class="seg" role="group" aria-label="Velocidade">
+      <button data-rate="0.75" aria-pressed="false">0.75×</button>
+      <button data-rate="1" aria-pressed="true">1×</button>
+    </div>
+  </div>
+</header>
+<main id="app" tabindex="-1"></main>
+<nav class="tabbar" aria-label="Principal">
+  <a href="#/" data-nav="home">Viagem</a>
+  <a href="#/book" data-nav="book">Frases</a>
+  <a href="#/mix" data-nav="mix">Revisão</a>
+  <a href="#/me" data-nav="me">Progresso</a>
+</nav>
+<script src="data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
