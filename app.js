@@ -56,8 +56,8 @@ const initial = n => n[0].toUpperCase();
 /* ---------- audio ---------- */
 const A = new Audio(); A.preload = "auto";
 const packs = {}; let token = 0, curDone = null;
-function getPack(pid) {
-  const k = pid + "_" + S.accent;
+function getPack(pid, acc) {
+  const k = pid + "_" + acc;
   return packs[k] || (packs[k] = fetch(`audio/${k}.mp3`).then(r => { if (!r.ok) throw 0; return r.arrayBuffer(); }).catch(e => { delete packs[k]; throw e; }));
 }
 function stopAudio() {
@@ -67,7 +67,7 @@ function stopAudio() {
 function ttsFallback(text, rate) {
   return new Promise(res => {
     try {
-      const u = new SpeechSynthesisUtterance(text); u.lang = S.accent === "uk" ? "en-GB" : "en-US"; u.rate = rate;
+      const u = new SpeechSynthesisUtterance(text); u.lang = S.accent === "us" ? "en-US" : "en-GB"; u.rate = rate;
       const v = speechSynthesis.getVoices().find(v => v.lang.replace("_", "-") === u.lang);
       if (v) u.voice = v;
       u.onend = u.onerror = () => res(); speechSynthesis.speak(u);
@@ -78,8 +78,9 @@ function ttsFallback(text, rate) {
 async function play(pid, table, i, text, rate = S.rate) {
   stopAudio(); const my = token;
   try {
-    const buf = await getPack(pid); if (my !== token) return;
-    const [o, l] = table[S.accent][i];
+    const acc = table[S.accent] ? S.accent : "us";
+    const buf = await getPack(pid, acc); if (my !== token) return;
+    const [o, l] = table[acc][i];
     const url = URL.createObjectURL(new Blob([buf.slice(o, o + l)], { type: "audio/mpeg" }));
     await new Promise((res, rej) => {
       curDone = res; A.onended = () => { curDone = null; res(); }; A.onerror = () => rej();
@@ -102,7 +103,7 @@ function listen() {
   return new Promise((res, rej) => {
     if (!SR) return rej("nosr");
     stopAudio(); stopRec();
-    const r = new SR(); rec = r; r.lang = S.accent === "uk" ? "en-GB" : "en-US";
+    const r = new SR(); rec = r; r.lang = S.accent === "us" ? "en-US" : "en-GB";
     r.interimResults = false; r.maxAlternatives = 3; let got = false;
     r.onresult = e => { got = true; res([...e.results[0]].map(a => a.transcript)); };
     r.onerror = e => { if (!got) { got = true; rej(e.error); } };
@@ -153,13 +154,17 @@ function compare(text, heardList) {
 
 /* ---------- ui helpers ---------- */
 const app = $("#app");
+let h2 = "";
 const ICO = {
   play: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>',
   stop: '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>',
   mic: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="12" rx="3" fill="currentColor"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>'
 };
 const pct = x => Math.round(x * 100);
-function dlgProgress(d) { return ACTS.filter(a => P.done[d.id + ":" + a[0]] >= 0.7).length; }
+const DEEP_ACTS = [["read", "Leitura"], ["vocab", "Vocabulário"], ["gram", "Gramática"], ["write", "Escrita"], ["talk", "Fala livre"]];
+const actsFor = d => (D.deep && D.deep[d.id]) ? ACTS.concat(DEEP_ACTS) : ACTS;
+function dlgProgress(d) { return actsFor(d).filter(a => P.done[d.id + ":" + a[0]] >= 0.7).length; }
+const mains = () => D.dialogs.filter(d => !d.parent);
 function syncControls() {
   $$("[data-accent]").forEach(b => b.setAttribute("aria-pressed", b.dataset.accent === S.accent));
   $$("[data-rate]").forEach(b => b.setAttribute("aria-pressed", +b.dataset.rate === S.rate));
@@ -173,12 +178,15 @@ document.addEventListener("click", e => {
 /* ---------- router ---------- */
 window.addEventListener("hashchange", () => route());
 function route(keep) {
-  stopAudio(); stopRec();
+  stopAudio(); stopRec(); app.onclick = null;
   const h = location.hash.replace(/^#\/?/, "").split("/");
   const root = h[0] || "home";
-  $$("[data-nav]").forEach(a => a.classList.toggle("on", a.dataset.nav === (root === "d" ? "home" : root)));
+  $$("[data-nav]").forEach(a => a.classList.toggle("on", a.dataset.nav === (root === "d" ? "home" : root === "g" ? "gram" : root)));
   const sc = window.scrollY;
+  h2 = h[3] || "";
   if (root === "d" && byId(h[1])) viewDialog(byId(h[1]), h[2] || "listen");
+  else if (root === "gram") viewGrammarList();
+  else if (root === "g" && D.grammar.find(g => g.id === h[1])) viewGrammar(D.grammar.find(g => g.id === h[1]));
   else if (root === "book") viewBook();
   else if (root === "mix") viewMix();
   else if (root === "me") viewMe();
@@ -188,30 +196,38 @@ function route(keep) {
 
 /* ---------- views ---------- */
 function viewHome() {
-  const cats = [...new Set(D.dialogs.map(d => d.cat))];
-  const total = D.dialogs.length * ACTS.length, done = D.dialogs.reduce((s, d) => s + dlgProgress(d), 0);
+  const base = mains(), cats = [...new Set(base.map(d => d.cat))];
+  const all = D.dialogs;
+  const total = all.reduce((t, d) => t + actsFor(d).length, 0), done = all.reduce((t, d) => t + dlgProgress(d), 0);
+  const part2 = d => D.dialogs.find(x => x.parent === d.id);
   app.innerHTML = `
     <h1>Do check-in ao reencontro</h1>
-    <p class="lead">${D.dialogs.length} situações de viagem, com atrasos, imprevistos e encontros inesperados. Ouça em sotaque americano (US) ou britânico (UK) no topo da página e pratique falando.</p>
+    <p class="lead">${base.length} situações de viagem, com atrasos, imprevistos e encontros inesperados. Cada uma tem diálogo, parte 2 mais longa, texto, vocabulário, gramática, escrita e fala. Troque o sotaque no topo: US, UK ou EU (europeu).</p>
     <div class="stats">
       <div class="stat"><b>${P.xp}</b><span>pontos</span></div>
       <div class="stat"><b>${P.streak}</b><span>dias seguidos</span></div>
       <div class="stat"><b>${done}/${total}</b><span>atividades</span></div>
     </div>
-    <div class="hero-actions"><a class="btn" href="#/mix">Revisão do dia</a><a class="btn ghost" href="#/book">Banco de frases</a></div>
-    ${cats.map(c => `<div class="cat">${esc(c)}</div><div class="grid">${D.dialogs.filter(d => d.cat === c).map(d => {
-    const n = dlgProgress(d);
-    return `<a class="card" href="#/d/${d.id}"><h3>${esc(d.pt)}</h3><div class="en">${esc(d.en)}</div>
-        <div class="meta"><span>${d.items.length} falas</span><span>${n}/${ACTS.length}</span></div><div class="bar"><i style="width:${n / ACTS.length * 100}%"></i></div></a>`;
+    <div class="hero-actions"><a class="btn" href="#/mix">Revisão do dia</a><a class="btn ghost" href="#/gram">Gramática</a><a class="btn ghost" href="#/book">Banco de frases</a></div>
+    ${cats.map(c => `<div class="cat">${esc(c)}</div><div class="grid">${base.filter(d => d.cat === c).map(d => {
+    const n = dlgProgress(d) + (part2(d) ? dlgProgress(part2(d)) : 0), t = actsFor(d).length + (part2(d) ? actsFor(part2(d)).length : 0);
+    const p2 = part2(d);
+    return `<div class="card"><a href="#/d/${d.id}" class="cardlink"><h3>${esc(d.pt)}</h3><div class="en">${esc(d.en)}</div></a>
+        <div class="meta"><span>${d.items.length}${p2 ? " + " + p2.items.length : ""} falas</span><span>${n}/${t}</span></div><div class="bar"><i style="width:${n / t * 100}%"></i></div>
+        <div class="links"><a href="#/d/${d.id}">Parte 1</a>${p2 ? `<a href="#/d/${p2.id}">Parte 2</a>` : ""}${D.deep && D.deep[d.id] ? `<a href="#/d/${d.id}/study">Estudo</a>` : ""}</div></div>`;
   }).join("")}</div>`).join("")}`;
 }
 
 function viewDialog(d, tab) {
-  const tabs = [["listen", "Ouvir"], ["role", "Falar"], ["act", "Exercícios"], ["phr", "Frases"]];
-  const cur = ["listen", "role", "phr"].includes(tab) ? tab : "act";
+  const hasDeep = !!(D.deep && D.deep[d.id]);
+  const tabs = [["listen", "Ouvir"], ["role", "Falar"], ["act", "Exercícios"], ["phr", "Frases"]].concat(hasDeep ? [["study", "Estudo"]] : []);
+  const cur = ["listen", "role", "phr", "study"].includes(tab) ? tab : "act";
+  const parent = d.parent ? byId(d.parent) : null, child = D.dialogs.find(x => x.parent === d.id);
   app.innerHTML = `
-    <div class="crumb"><a href="#/">← Todas as situações</a><span class="tag">${esc(d.cat)}</span></div>
+    <div class="crumb"><a href="#/">← Todas as situações</a><span class="tag">${esc(d.cat)}</span>
+      ${parent ? `<a href="#/d/${parent.id}">Parte 1</a>` : ""}${child ? `<a href="#/d/${child.id}">Parte 2 →</a>` : ""}</div>
     <h1>${esc(d.pt)}</h1><p class="lead">${esc(d.en)}</p>
+    ${d.cat === "Escuta real" ? `<div class="warn">Treino de escuta: ative <b>EU</b> no topo para ouvir com sotaque europeu e use "Esconder inglês" para ouvir sem ler.</div>` : ""}
     <div class="tabs" role="tablist">${tabs.map(t => `<button role="tab" aria-selected="${t[0] === cur}" data-tab="${t[0]}">${t[1]}</button>`).join("")}</div>
     <div id="pane"></div>`;
   $$("[data-tab]").forEach(b => b.onclick = () => { location.hash = `#/d/${d.id}/${b.dataset.tab}`; });
@@ -219,6 +235,7 @@ function viewDialog(d, tab) {
   if (cur === "listen") paneListen(d, pane);
   else if (cur === "role") paneRole(d, pane);
   else if (cur === "phr") panePhrases(d, pane);
+  else if (cur === "study") paneStudy(d, pane, h2 || "read");
   else paneActivities(d, pane, tab);
 }
 
@@ -344,7 +361,7 @@ function runRole(d, pane, me) {
 /* --- activities --- */
 function paneActivities(d, pane, tab) {
   const run = ACTS.find(a => a[0] === tab);
-  if (run && tab !== "role") return runActivity(d, pane, tab);
+  if (run && tab !== "role" && MAKERS[tab]) return runActivity(d, pane, tab);
   pane.innerHTML = `<div class="act-grid">${ACTS.filter(a => a[0] !== "role").map(a => {
     const v = P.done[d.id + ":" + a[0]];
     return `<button class="act" data-a="${a[0]}"><b>${a[1]}</b><span>${a[2]}</span><span class="${v >= .7 ? "done" : ""}">${v != null ? "Melhor: " + pct(v) + "%" : "Ainda não feito"}</span></button>`;
@@ -498,7 +515,7 @@ function viewMix() {
 function viewMe() {
   app.innerHTML = `<h1>Seu progresso</h1>
     <div class="stats"><div class="stat"><b>${P.xp}</b><span>pontos</span></div><div class="stat"><b>${P.streak}</b><span>dias seguidos</span></div><div class="stat"><b>${P.weak.length}</b><span>para revisar</span></div></div>
-    <div class="panel">${D.dialogs.map(d => { const n = dlgProgress(d); return `<div class="phr" style="grid-template-columns:1fr auto"><a href="#/d/${d.id}">${esc(d.pt)}</a><span class="tag">${n}/${ACTS.length}</span></div>`; }).join("")}</div>
+    <div class="panel">${D.dialogs.map(d => { const n = dlgProgress(d); return `<div class="phr" style="grid-template-columns:1fr auto"><a href="#/d/${d.id}">${esc(d.pt)}</a><span class="tag">${n}/${actsFor(d).length}</span></div>`; }).join("")}</div>
     <div class="panel"><h3>Levar o progresso para outro aparelho</h3>
     <p class="note">O progresso fica salvo neste navegador. Para usar em outro celular ou computador, copie o código abaixo e cole lá.</p>
     <textarea class="input" id="code" aria-label="Código de progresso" spellcheck="false"></textarea>
@@ -506,6 +523,169 @@ function viewMe() {
   $("#exp").onclick = () => { $("#code").value = btoa(unescape(encodeURIComponent(JSON.stringify(P)))); $("#code").select(); $("#msg").textContent = "Copie o código acima."; };
   $("#imp").onclick = () => { try { const o = JSON.parse(decodeURIComponent(escape(atob($("#code").value.trim())))); Object.assign(P, { xp: 0, streak: 0, last: "", done: {}, weak: [] }, o); saveP(); viewMe(); $("#msg").textContent = "Progresso carregado."; } catch { $("#msg").textContent = "Código inválido."; } };
   $("#rst").onclick = () => { if ($("#rst").dataset.sure) { Object.assign(P, { xp: 0, streak: 0, last: "", done: {}, weak: [] }); saveP(); viewMe(); } else { $("#rst").dataset.sure = 1; $("#rst").textContent = "Toque de novo para confirmar"; } };
+}
+
+/* --- study: reading, vocabulary, grammar, writing, free speaking --- */
+let stopLong = null;
+function listenLong(onUpdate) {
+  return new Promise((res, rej) => {
+    if (!SR) return rej("nosr");
+    stopAudio(); stopRec();
+    const r = new SR(); rec = r; r.lang = S.accent === "us" ? "en-US" : "en-GB";
+    r.continuous = true; r.interimResults = true; let final = "";
+    r.onresult = e => {
+      let interim = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const t = e.results[i][0].transcript;
+        if (e.results[i].isFinal) final += t + " "; else interim += t;
+      }
+      onUpdate((final + interim).trim());
+    };
+    r.onerror = e => { if (e.error !== "no-speech" && e.error !== "aborted") rej(e.error); };
+    r.onend = () => { rec = null; stopLong = null; res(final.trim()); };
+    stopLong = () => { try { r.stop(); } catch { } };
+    try { r.start(); } catch { rej("start"); }
+  });
+}
+const wordCount = t => (t.match(/[A-Za-zÀ-ÿ']+/g) || []).length;
+function usedVocab(text, vocab) {
+  const low = " " + norm(text).join(" ") + " ";
+  return vocab.filter(v => norm(v.w).length && low.includes(" " + norm(v.w).join(" ") + " "));
+}
+function paneStudy(d, pane, sec) {
+  const dp = D.deep[d.id], nP = dp.paras.length;
+  const secs = [["read", "Texto"], ["vocab", "Vocabulário"], ["gram", "Gramática"], ["write", "Escrita"], ["talk", "Fala livre"]];
+  sec = secs.some(x => x[0] === sec) ? sec : "read";
+  pane.innerHTML = `<div class="toolbar">${secs.map(x => `<button class="chip" data-sec="${x[0]}" aria-pressed="${x[0] === sec}">${x[1]}${P.done[d.id + ":" + x[0]] >= .7 ? " ✓" : ""}</button>`).join("")}</div><div id="sp"></div>`;
+  $$("[data-sec]", pane).forEach(b => b.onclick = () => { location.hash = `#/d/${d.id}/study/${b.dataset.sec}`; });
+  const sp = $("#sp");
+  const say = (i, text, rate) => play("r_" + d.id, dp.audio, i, text, rate);
+  const back = () => paneStudy(d, pane, sec);
+
+  if (sec === "read") {
+    let pt = S.showPT;
+    const draw = () => {
+      sp.innerHTML = `<div class="panel"><h2>${esc(dp.title)}</h2><div class="note">${esc(dp.title_pt)}</div>
+        <div class="toolbar" style="margin-top:10px"><button class="btn sm" id="all">${ICO.play} Ouvir o texto</button><button class="chip" id="tpt" aria-pressed="${pt}">Português</button></div>
+        ${dp.paras.map((p, i) => `<div class="phr" style="grid-template-columns:auto 1fr"><button class="icon" data-p="${i}" aria-label="Ouvir parágrafo">${ICO.play}</button>
+          <div><div class="en" style="font-weight:400">${esc(p.en)}</div>${pt ? `<div class="pt">${esc(p.pt)}</div>` : ""}</div></div>`).join("")}</div>
+        <div class="hero-actions"><button class="btn" id="qs">Responder perguntas (${dp.quiz.length + dp.tf.length})</button></div>`;
+      $("#tpt").onclick = () => { pt = !pt; draw(); };
+      sp.onclick = e => { const b = e.target.closest("[data-p]"); if (b) say(+b.dataset.p, dp.paras[+b.dataset.p].en); };
+      $("#all").onclick = async () => {
+        stopAudio(); const my = token;
+        for (let i = 0; i < nP; i++) { await say(i, dp.paras[i].en); if (my !== token) break; }
+      };
+      $("#qs").onclick = () => {
+        const qs = dp.quiz.map(q => ({ kind: "mc", prompt: q.q, opts: shuffle(q.o), ans: q.o[q.a] }))
+          .concat(dp.tf.map(t => ({ kind: "mc", prompt: "True or false?  " + t.s, opts: ["True", "False"], ans: t.a ? "True" : "False" })));
+        runQuestions(sp, "Leitura: " + dp.title, qs, r => markDone(d.id, "read", r), `#/d/${d.id}/study/read`, back);
+      };
+    };
+    draw();
+  } else if (sec === "vocab") {
+    const pool = D.dialogs.flatMap(x => (D.deep && D.deep[x.id]) ? D.deep[x.id].vocab : []);
+    sp.innerHTML = `<div class="panel">${dp.vocab.map((v, i) => `
+      <div class="phr"><button class="icon" data-p="${i}" aria-label="Ouvir">${ICO.play}</button>
+      <div><div class="en">${esc(v.w)} <span class="pt">· ${esc(v.pt)}</span></div><div class="pt">${esc(v.ex)}</div></div>
+      <button class="icon" data-s="${i}" aria-label="Falar">${ICO.mic}</button></div><div id="vb${i}"></div>`).join("")}</div>
+      <div class="hero-actions"><button class="btn" id="qs">Treinar vocabulário</button></div>`;
+    sp.onclick = e => {
+      const pb = e.target.closest("[data-p]"), sb = e.target.closest("[data-s]");
+      if (pb) { const v = dp.vocab[+pb.dataset.p]; say(nP + +pb.dataset.p, v.w + ". " + v.ex); }
+      if (sb) { const v = dp.vocab[+sb.dataset.s]; speakCheck(sb, { en: v.ex }, $("#vb" + sb.dataset.s)); }
+    };
+    $("#qs").onclick = () => {
+      const qs = [];
+      dp.vocab.forEach((v, i) => {
+        const others = sample(pool.filter(o => o.w !== v.w), 3);
+        qs.push({ kind: "mc", prompt: `O que significa "${v.w}"?`, opts: shuffle([v, ...others]).map(x => x.pt), ans: v.pt });
+        if (i % 2 === 0) qs.push({ kind: "mc", audio: () => say(nP + i, v.w + ". " + v.ex), prompt: "Ouça. Qual palavra você ouviu?", opts: shuffle([v, ...others]).map(x => x.w), ans: v.w });
+      });
+      runQuestions(sp, "Vocabulário", qs.slice(0, 10), r => markDone(d.id, "vocab", r), `#/d/${d.id}/study/vocab`, back);
+    };
+  } else if (sec === "gram") {
+    const g = dp.g;
+    sp.innerHTML = `<div class="panel"><h2>${esc(g.title)}</h2><p>${esc(g.expl)}</p></div>
+      <div class="hero-actions"><button class="btn" id="qs">Exercícios (${dp.gx.length})</button></div>`;
+    $("#qs").onclick = () => runQuestions(sp, "Gramática", dp.gx.map(q => ({ kind: "mc", prompt: q.q, opts: shuffle(q.o), ans: q.o[q.a] })), r => markDone(d.id, "gram", r), `#/d/${d.id}/study/gram`, back);
+  } else if (sec === "write") {
+    const w = dp.w;
+    sp.innerHTML = `<div class="panel"><h3>Escrita guiada</h3><p>${esc(w.prompt)}</p>
+      <textarea class="input" id="txt" style="font-family:inherit;font-size:1rem" aria-label="Seu texto em inglês" placeholder="Write in English here..."></textarea>
+      <div class="note">Palavras do vocabulário para usar: ${dp.vocab.map(v => esc(v.w)).join(", ")}</div>
+      <div class="hero-actions"><button class="btn" id="chk">Verificar</button><button class="btn ghost" id="mod">Ver modelo</button></div><div id="out"></div></div>`;
+    try { $("#txt").value = localStorage.getItem("te_w_" + d.id) || ""; } catch { }
+    $("#txt").oninput = () => { try { localStorage.setItem("te_w_" + d.id, $("#txt").value); } catch { } };
+    $("#chk").onclick = () => {
+      const t = $("#txt").value, n = wordCount(t), used = usedVocab(t, dp.vocab), goal = Math.max(15, Math.round(wordCount(w.model) * .6));
+      const r = Math.min(1, n / goal);
+      markDone(d.id, "write", r);
+      $("#out").innerHTML = `<div class="fb ${r >= .7 ? "ok" : "bad"}"><b>${n}</b> palavras (meta: ${goal}). Vocabulário usado: ${used.length ? used.map(v => esc(v.w)).join(", ") : "nenhum ainda"}.
+        ${r >= .7 ? "Boa! Compare com o modelo e releia procurando erros de verbo e preposição." : "Escreva um pouco mais para atingir a meta."}</div>`;
+    };
+    $("#mod").onclick = () => {
+      $("#out").innerHTML = `<div class="bub" style="margin-top:12px"><div class="name">Modelo</div><div class="t">${esc(w.model)}</div></div>
+        <div class="hero-actions"><button class="btn sm ghost" id="pm">${ICO.play} Ouvir modelo</button></div>`;
+      $("#pm").onclick = () => say(nP + dp.vocab.length, w.model);
+    };
+  } else {
+    const s = dp.s;
+    sp.innerHTML = `<div class="panel"><h3>Fale livremente</h3><p>${esc(s.prompt)}</p>
+      <div class="center">${SR ? `<button class="mic" id="mic" aria-label="Gravar">${ICO.mic}</button><div class="note" id="hint">Toque para começar. Toque de novo para terminar.</div>` : `<div class="warn">Este navegador não reconhece voz. Escreva o que falaria na caixa abaixo.</div>`}</div>
+      <textarea class="input" id="tr" style="font-family:inherit;font-size:1rem" aria-label="Transcrição" placeholder="Sua fala aparece aqui..."></textarea>
+      <div class="note">Dica: use ${dp.vocab.slice(0, 4).map(v => esc(v.w)).join(", ")}.</div>
+      <div class="hero-actions"><button class="btn" id="chk">Avaliar</button><button class="btn ghost" id="mod">Ver modelo</button></div><div id="out"></div></div>`;
+    let live = false;
+    const mic = $("#mic");
+    if (mic) mic.onclick = async () => {
+      if (live) { if (stopLong) stopLong(); return; }
+      live = true; mic.classList.add("rec"); $("#hint").textContent = "Gravando… toque para terminar.";
+      try {
+        const txt = await listenLong(t => { $("#tr").value = t; });
+        if (txt) $("#tr").value = txt;
+      } catch (err) { $("#hint").textContent = err === "not-allowed" ? "Microfone bloqueado. Libere a permissão no navegador." : "Não consegui ouvir (" + err + ")."; }
+      live = false; mic.classList.remove("rec"); if ($("#hint").textContent.startsWith("Grav")) $("#hint").textContent = "Pronto. Toque em Avaliar.";
+    };
+    $("#chk").onclick = () => {
+      const t = $("#tr").value, n = wordCount(t), used = usedVocab(t, dp.vocab), goal = Math.max(15, Math.round(wordCount(s.model) * .6));
+      const r = Math.min(1, n / goal);
+      markDone(d.id, "talk", r);
+      const c = compare(s.model, [t]);
+      $("#out").innerHTML = `<div class="fb ${r >= .7 ? "ok" : "bad"}"><b>${n}</b> palavras (meta: ${goal}). Vocabulário usado: ${used.length ? used.map(v => esc(v.w)).join(", ") : "nenhum ainda"}.
+        Semelhança com o modelo: ${pct(c.score)}%. ${r >= .7 ? "Boa! Ouça o modelo e tente de novo, mais fluido." : "Fale mais um pouco e tente de novo."}</div>`;
+    };
+    $("#mod").onclick = () => {
+      $("#out").innerHTML = `<div class="bub" style="margin-top:12px"><div class="name">Modelo</div><div class="t">${esc(s.model)}</div></div>
+        <div class="hero-actions"><button class="btn sm ghost" id="pm">${ICO.play} Ouvir modelo</button></div>`;
+      $("#pm").onclick = () => say(nP + dp.vocab.length + 1, s.model);
+    };
+  }
+}
+
+/* --- grammar --- */
+function viewGrammarList() {
+  const done = D.grammar.filter(g => P.done["g:" + g.id] >= .7).length;
+  app.innerHTML = `<h1>Gramática de viagem</h1><p class="lead">Lições curtas, em português, com exemplos de situações reais de viagem, áudio nos sotaques e exercícios. ${done}/${D.grammar.length} concluídas.</p>
+    <div class="grid" style="margin-top:16px">${D.grammar.map(g => `<a class="card" href="#/g/${g.id}"><h3>${esc(g.pt)}</h3><div class="en">${esc(g.en)}</div>
+      <div class="meta"><span>${g.ex.length} exemplos</span><span>${P.done["g:" + g.id] != null ? pct(P.done["g:" + g.id]) + "%" : "novo"}</span></div></a>`).join("")}</div>`;
+}
+function viewGrammar(g) {
+  app.innerHTML = `<div class="crumb"><a href="#/gram">← Gramática</a></div><h1>${esc(g.pt)}</h1><p class="lead">${esc(g.en)}</p>
+    <div class="panel" style="margin-top:14px"><p>${esc(g.expl)}</p></div>
+    <div class="panel"><h3>Exemplos</h3><div class="toolbar" style="margin-top:8px"><button class="btn sm" id="all">${ICO.play} Ouvir todos</button></div>
+    ${g.ex.map((e, i) => `<div class="phr"><button class="icon" data-p="${i}" aria-label="Ouvir">${ICO.play}</button>
+      <div><div class="en">${esc(e.en)}</div><div class="pt">${esc(e.pt)}</div></div>
+      <button class="icon" data-s="${i}" aria-label="Falar">${ICO.mic}</button></div><div id="gf${i}"></div>`).join("")}</div>
+    <div class="hero-actions"><button class="btn" id="qs">Exercícios (${g.x.length})</button></div><div id="gp" style="margin-top:14px"></div>`;
+  const say = (i, t) => play("g_" + g.id, g.audio, i, t);
+  app.onclick = e => {
+    const pb = e.target.closest("[data-p]"), sb = e.target.closest("[data-s]");
+    if (pb) say(+pb.dataset.p, g.ex[+pb.dataset.p].en);
+    if (sb) speakCheck(sb, g.ex[+sb.dataset.s], $("#gf" + sb.dataset.s));
+  };
+  $("#all").onclick = async () => { stopAudio(); const my = token; for (let i = 0; i < g.ex.length; i++) { await say(i, g.ex[i].en); if (my !== token) break; await new Promise(r => setTimeout(r, 300)); } };
+  $("#qs").onclick = () => runQuestions($("#gp"), g.pt, shuffle(g.x).map(q => ({ kind: "mc", prompt: q.q, opts: shuffle(q.o), ans: q.o[q.a] })), r => markDone("g", g.id, r), `#/g/${g.id}`, () => viewGrammar(g));
 }
 
 /* ---------- boot ---------- */
